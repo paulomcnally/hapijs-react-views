@@ -69,4 +69,4 @@ function createEngine(engineOptions) {
   return renderFile;
 }
 
-exports.createEngine = createEngine;
+module.exports = createEngine

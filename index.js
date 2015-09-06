@@ -7,85 +7,66 @@
  *  of patent rights can be found in the PATENTS file in the same directory.
  */
 
-'use strict';
-
 var React = require('react');
 var beautifyHTML = require('js-beautify').html;
-var nodeJSX = require('node-jsx');
 var assign = require('object-assign');
 
 var DEFAULT_OPTIONS = {
-    jsx: {
-        extension: '.jsx',
-        harmony: false
-    },
-    doctype: '<!DOCTYPE html>',
-    beautify: false,
-    caching: true
+  doctype: '<!DOCTYPE html>',
+  beautify: false,
+  transformViews: true,
 };
 
-module.exports = function (engineOptions) {
-    engineOptions = engineOptions || {};
-    // Merge was nice because it did nest objects. assign doesn't. So we're going
-    // to assign the JSX options then the rest. If there were more than a single
-    // nested option, this would be really dumb. As is, it looks pretty stupid but
-    // it keeps our dependencies slim.
-    var jsxOptions = assign({}, DEFAULT_OPTIONS.jsx, engineOptions.jsx);
+function createEngine(engineOptions) {
+  var registered = false;
+  var moduleDetectRegEx;
 
-    // Since we're passing an object with jsx as the key, it'll override the rest.
-    engineOptions = assign({}, DEFAULT_OPTIONS, engineOptions, {
-        jsx: jsxOptions
-    });
+  engineOptions = assign({}, DEFAULT_OPTIONS, engineOptions || {});
 
-    // Don't install the require until the engine is created. This lets us leave
-    // the option of using harmony features up to the consumer.
-    nodeJSX.install(engineOptions.jsx);
+  function renderFile(filename, options, cb) {
+    // Defer babel registration until the first request so we can grab the view path.
+    if (!moduleDetectRegEx) {
+      moduleDetectRegEx = new RegExp('^' + options.settings.views);
+    }
+    if (engineOptions.transformViews && !registered) {
+      // Passing a RegExp to Babel results in an issue on Windows so we'll just
+      // pass the view path.
+      require('babel/register')({
+        only: options.settings.views
+      });
+      registered = true;
+    }
 
-    var caching = engineOptions.caching ? true : false;
-    var moduleDetectRegEx = new RegExp('\\' + engineOptions.jsx.extension + '$');
+    try {
+      var markup = engineOptions.doctype;
+      var component = require(filename);
+      // Transpiled ES6 may export components as { default: Component }
+      component = component.default || component;
+      markup +=
+        React.renderToStaticMarkup(React.createElement(component, options));
+    } catch (e) {
+      return cb(e);
+    }
 
-    return {
-        module: {
-            compile: function (template, options, callback) {
-                var filename = options.filename;
-                var doctype = engineOptions.doctype;
-                var component;
-                try {
-                    component = require(filename);
-                    // Transpiled ES6 may export components as { default: Component }
-                    component = component.default || component;
-                    component = React.createFactory(component);
+    if (engineOptions.beautify) {
+      // NOTE: This will screw up some things where whitespace is important, and be
+      // subtly different than prod.
+      markup = beautifyHTML(markup);
+    }
 
-                    process.nextTick(function () {
-                        callback(null, function (context, options, callback) {
-                            var markup = doctype;
-                            try {
-                                markup += React.renderToStaticMarkup(component(context));
-                            }
-                            catch (e) {
-                                throw e;
-                            }
-                            if (engineOptions.beautify) {
-                                // NOTE: This will screw up some things where whitespace is important, and be
-                                // subtly different than prod.
-                                markup = beautifyHTML(markup);
-                            }
-                            if (process.env.NODE_ENV === 'development' || !caching) {
-                                Object.keys(require.cache).forEach(function (module) {
-                                    if (moduleDetectRegEx.test(require.cache[module].filename)) {
-                                        delete require.cache[module];
-                                    }
-                                });
-                            }
-                            callback(null, markup);
-                        });
-                    });
-                }
-                catch (e) {
-                    callback(e);
-                }
-            }
-        },
-        compileMode: 'async'
-    };
-};
+    if (options.settings.env === 'development') {
+      // Remove all files from the module cache that are in the view folder.
+      Object.keys(require.cache).forEach(function(module) {
+        if (moduleDetectRegEx.test(require.cache[module].filename)) {
+          delete require.cache[module];
+        }
+      });
+    }
+
+    cb(null, markup);
+  }
+
+  return renderFile;
+}
+
+exports.createEngine = createEngine;
